@@ -326,6 +326,10 @@ class GuiHeadlessTests(unittest.TestCase):
             app._reprobe()
             self.assertTrue(app.probe.scan_file)
             self.assertEqual(app.probe.target, "10.8.8.8")
+            app._set_text(app.summary, "line one\n" * 80)
+            app.update_idletasks()
+            self.assertGreater(float(app.summary.text.index("end-1c").split(".")[0]), 70)
+            self.assertEqual(app.notebook.index("end"), 4)
         finally:
             app.destroy()
 

@@ -19,7 +19,6 @@ from typing import Any, Dict, List, Optional
 try:
     import tkinter as tk
     from tkinter import filedialog, messagebox, ttk
-    from tkinter.scrolledtext import ScrolledText
 except ImportError as exc:
     raise SystemExit("tkinter is required. On macOS: brew install python-tk") from exc
 
@@ -87,13 +86,110 @@ def default_operator() -> Optional[str]:
     return value or None
 
 
+class ScrollBox(ttk.Frame):
+    """Text + always-visible scrollbar. Disabled still scrolls and copies."""
+
+    def __init__(self, master: tk.Misc, height: int = 12, font: Any = None, **kw: Any) -> None:
+        super().__init__(master)
+        self.columnconfigure(0, weight=1)
+        self.rowconfigure(0, weight=1)
+        self.readonly = False
+        self.text = tk.Text(
+            self,
+            wrap="word",
+            undo=True,
+            height=height,
+            font=font or ("Menlo", 13),
+            padx=8,
+            pady=8,
+            relief="flat",
+            highlightthickness=0,
+            **kw,
+        )
+        scroll = ttk.Scrollbar(self, orient="vertical", command=self.text.yview)
+        self.text.configure(yscrollcommand=scroll.set)
+        self.text.grid(row=0, column=0, sticky="nsew")
+        scroll.grid(row=0, column=1, sticky="ns")
+        self.text.bind("<MouseWheel>", self._wheel)
+        self.text.bind("<Button-4>", lambda e: self._step(-1))
+        self.text.bind("<Button-5>", lambda e: self._step(1))
+        self.text.bind("<Key>", self._on_key)
+        if sys.platform == "darwin":
+            self.text.bind("<Command-a>", self._select_all)
+            self.text.bind("<Command-c>", lambda _e: None)
+        else:
+            self.text.bind("<Control-a>", self._select_all)
+
+    def _wheel(self, event: tk.Event) -> str:
+        delta = int(event.delta)
+        if sys.platform == "darwin":
+            self.text.yview_scroll(int(-1 * delta), "units")
+        else:
+            self.text.yview_scroll(int(-1 * (delta / 120)), "units")
+        return "break"
+
+    def _step(self, direction: int) -> str:
+        self.text.yview_scroll(direction, "units")
+        return "break"
+
+    def _on_key(self, event: tk.Event) -> Optional[str]:
+        if not self.readonly:
+            return None
+        allowed = {"Left", "Right", "Up", "Down", "Prior", "Next", "Home", "End", "Shift_L", "Shift_R"}
+        if event.keysym in allowed:
+            return None
+        if event.state & 0x8 or event.state & 0x4:  # command / control
+            if event.keysym.lower() in {"c", "a"}:
+                return None
+        return "break"
+
+    def _select_all(self, _event: tk.Event | None = None) -> str:
+        self.text.tag_add("sel", "1.0", "end-1c")
+        return "break"
+
+    def get(self, start: str = "1.0", end: str = "end") -> str:
+        return self.text.get(start, end)
+
+    def insert(self, index: str, text: str) -> None:
+        self.text.insert(index, text)
+
+    def delete(self, start: str, end: Optional[str] = None) -> None:
+        self.text.delete(start, end)
+
+    def see(self, index: str) -> None:
+        self.text.see(index)
+
+    def focus_set(self) -> None:
+        self.text.focus_set()
+
+    def bind(self, sequence: str, func: Any, add: Any = None) -> str:  # type: ignore[override]
+        return self.text.bind(sequence, func, add)
+
+    def configure(self, cnf: Any = None, **kw: Any) -> Any:  # type: ignore[override]
+        opts = dict(cnf or {})
+        opts.update(kw)
+        if "state" in opts:
+            state = opts.pop("state")
+            self.readonly = str(state) in {"disabled", "readonly"}
+        if opts:
+            return self.text.configure(**opts)
+        return None
+
+    config = configure
+
+    def cget(self, key: str) -> Any:
+        if key == "state":
+            return "disabled" if self.readonly else "normal"
+        return self.text.cget(key)
+
+
 class EasyOperator(tk.Tk):
     def __init__(self, initial: str = "", preselect_repo: Optional[str] = None) -> None:
         super().__init__()
         self.analyzer = load_analyzer()
-        self.title("Assess")
-        self.geometry("920x720")
-        self.minsize(760, 560)
+        self.title("HF Assess")
+        self.geometry("1100x780")
+        self.minsize(820, 600)
         self.msg_q: queue.Queue[str] = queue.Queue()
         self.busy = False
         self.last_output: Optional[Path] = None
@@ -112,35 +208,33 @@ class EasyOperator(tk.Tk):
 
     def _build(self) -> None:
         self.columnconfigure(0, weight=1)
-        self.rowconfigure(2, weight=1)
-        self.rowconfigure(4, weight=3)
+        self.rowconfigure(3, weight=1)
 
-        head = ttk.Frame(self, padding=(16, 14, 16, 6))
+        head = ttk.Frame(self, padding=(14, 10, 14, 4))
         head.grid(row=0, column=0, sticky="ew")
-        ttk.Label(head, text="Paste anything. Then run.", font=("Helvetica", 20, "bold")).pack(anchor="w")
-        ttk.Label(
-            head,
-            text="IP, hostname, URL, nmap output, XML, JSON, CVE list, a scan file path, or a Hugging Face model id.",
-            wraplength=880,
-        ).pack(anchor="w")
+        ttk.Label(head, text="Paste a host, URL, or scan. Then Run.", font=("Helvetica", 16, "bold")).pack(anchor="w")
 
-        box = ttk.Frame(self, padding=(16, 4, 16, 4))
-        box.grid(row=1, column=0, sticky="nsew")
+        box = ttk.Frame(self, padding=(14, 0, 14, 4))
+        box.grid(row=1, column=0, sticky="ew")
         box.columnconfigure(0, weight=1)
-        self.inbox = ScrolledText(box, height=8, wrap="word", font=("Menlo", 13), undo=True)
-        self.inbox.grid(row=0, column=0, sticky="nsew")
+        self.inbox = ScrollBox(box, height=4, font=("Menlo", 13))
+        self.inbox.grid(row=0, column=0, sticky="ew")
         self.inbox.bind("<KeyRelease>", lambda _e: self._schedule_probe())
         self.inbox.bind("<<Paste>>", lambda _e: self.after(30, self._reprobe))
         self.inbox.focus_set()
 
         actions = ttk.Frame(box)
-        actions.grid(row=1, column=0, sticky="ew", pady=(8, 0))
+        actions.grid(row=1, column=0, sticky="ew", pady=(6, 0))
         self.open_btn = ttk.Button(actions, text="Open file…", command=self._open_file)
         self.open_btn.pack(side="left")
-        self.paste_btn = ttk.Button(actions, text="Paste clipboard", command=self._paste_clipboard)
+        self.paste_btn = ttk.Button(actions, text="Paste", command=self._paste_clipboard)
         self.paste_btn.pack(side="left", padx=6)
         self.clear_btn = ttk.Button(actions, text="Clear", command=self._clear)
         self.clear_btn.pack(side="left")
+        self.copy_btn = ttk.Button(actions, text="Copy result", command=self._copy_result)
+        self.copy_btn.pack(side="left", padx=(16, 0))
+        self.folder_btn = ttk.Button(actions, text="Open report folder", command=self._open_folder)
+        self.folder_btn.pack(side="left", padx=6)
         self.run_btn = ttk.Button(actions, text="Run", command=self.run_analysis)
         self.run_btn.pack(side="right")
         self.auth_var = tk.BooleanVar(value=False)
@@ -152,30 +246,41 @@ class EasyOperator(tk.Tk):
         self.nmap_var = tk.BooleanVar(value=False)
         self.nmap_chk = ttk.Checkbutton(actions, text="Also run nmap", variable=self.nmap_var)
 
-        detect = ttk.LabelFrame(self, text="What I will do", padding=10)
-        detect.grid(row=2, column=0, sticky="nsew", padx=16, pady=(4, 8))
-        detect.columnconfigure(0, weight=1)
-        self.detect = ScrolledText(detect, height=7, wrap="word", font=("Helvetica", 13), background="#f4f4f4")
-        self.detect.grid(row=0, column=0, sticky="nsew")
+        meta = ttk.Frame(self, padding=(14, 0, 14, 6))
+        meta.grid(row=2, column=0, sticky="ew")
+        meta.columnconfigure(0, weight=1)
+        self.detect = ScrollBox(meta, height=3, font=("Helvetica", 12))
+        self.detect.grid(row=0, column=0, sticky="ew")
         self.detect.configure(state="disabled")
-
         self.status = tk.StringVar(value=self._model_status_line())
-        ttk.Label(self, textvariable=self.status, padding=(16, 0)).grid(row=3, column=0, sticky="w")
+        ttk.Label(meta, textvariable=self.status).grid(row=1, column=0, sticky="w", pady=(4, 0))
 
-        notes = ttk.Notebook(self)
-        notes.grid(row=4, column=0, sticky="nsew", padx=16, pady=(0, 12))
-        self.summary = ScrolledText(notes, wrap="word", font=("Helvetica", 13))
-        self.findings = ScrolledText(notes, wrap="word", font=("Menlo", 12))
-        self.model_out = ScrolledText(notes, wrap="word", font=("Menlo", 12))
-        self.log = ScrolledText(notes, wrap="word", font=("Menlo", 11))
-        notes.add(self.summary, text="Result")
-        notes.add(self.findings, text="Findings")
-        notes.add(self.model_out, text="Model")
-        notes.add(self.log, text="Log")
+        notes_wrap = ttk.Frame(self, padding=(14, 0, 14, 12))
+        notes_wrap.grid(row=3, column=0, sticky="nsew")
+        notes_wrap.columnconfigure(0, weight=1)
+        notes_wrap.rowconfigure(0, weight=1)
+        self.notebook = ttk.Notebook(notes_wrap)
+        self.notebook.grid(row=0, column=0, sticky="nsew")
+
+        self.summary = self._add_tab(self.notebook, "Result")
+        self.findings = self._add_tab(self.notebook, "Findings")
+        self.model_out = self._add_tab(self.notebook, "Model")
+        self.log = self._add_tab(self.notebook, "Log")
         for widget in (self.summary, self.findings, self.model_out, self.log):
             widget.configure(state="disabled")
 
         self._probe_job = None
+        self.bind("<Command-Return>", lambda _e: self.run_analysis())
+        self.bind("<Control-Return>", lambda _e: self.run_analysis())
+
+    def _add_tab(self, notebook: ttk.Notebook, title: str) -> ScrollBox:
+        frame = ttk.Frame(notebook)
+        frame.columnconfigure(0, weight=1)
+        frame.rowconfigure(0, weight=1)
+        box = ScrollBox(frame, height=24, font=("Menlo", 13))
+        box.grid(row=0, column=0, sticky="nsew")
+        notebook.add(frame, text=title)
+        return box
 
     def _alive(self) -> bool:
         try:
@@ -572,9 +677,30 @@ class EasyOperator(tk.Tk):
             self._set_text(self.findings, "No extracted findings. The model still analyzed whatever you pasted.")
         self._set_text(self.model_out, str(analysis.get("model_raw") or analysis.get("summary") or ""))
         self.status.set(f"Done — {risk.get('label', 'report')}  {output.name}")
+        self.notebook.select(0)
+        self.summary.see("1.0")
         md = output.with_suffix(".md")
         if md.is_file():
             self._log(f"Markdown: {md}")
+
+    def _copy_result(self) -> None:
+        try:
+            current = self.notebook.index(self.notebook.select())
+        except tk.TclError:
+            current = 0
+        boxes = (self.summary, self.findings, self.model_out, self.log)
+        text = boxes[current].get("1.0", "end").strip() if current < len(boxes) else ""
+        if not text:
+            return
+        self.clipboard_clear()
+        self.clipboard_append(text)
+        self.status.set("Copied current tab to clipboard")
+
+    def _open_folder(self) -> None:
+        RESULTS_DIR.mkdir(parents=True, exist_ok=True)
+        path = self.last_output.parent if self.last_output else RESULTS_DIR
+        opener = "open" if sys.platform == "darwin" else "xdg-open"
+        subprocess.Popen([opener, str(path)])
 
     def _log(self, line: str) -> None:
         self.log.configure(state="normal")
@@ -583,10 +709,11 @@ class EasyOperator(tk.Tk):
         self.log.configure(state="disabled")
 
     @staticmethod
-    def _set_text(widget: ScrolledText, text: str) -> None:
+    def _set_text(widget: ScrollBox, text: str) -> None:
         widget.configure(state="normal")
         widget.delete("1.0", "end")
         widget.insert("1.0", text)
+        widget.see("1.0")
         widget.configure(state="disabled")
 
 
