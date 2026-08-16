@@ -291,6 +291,22 @@ PORT   STATE SERVICE
         self.assertIn("CVE-2021-44228", probe.cves)
         self.assertEqual(probe.model_repo, "microsoft/DialoGPT-medium")
 
+    def test_probes_file_path_after_host_line(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "scan.json"
+            path.write_text(
+                json.dumps(
+                    {
+                        "target": "10.1.1.9",
+                        "vulnerabilities": [{"cve": "CVE-2022-22965", "severity": "High"}],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            probe = self.mod.probe_input(f"lab.internal\n{path}")
+            self.assertEqual(probe.scan_file, str(path.resolve()))
+            self.assertTrue(probe.ready)
+
     def test_probes_existing_file(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "scan.json"

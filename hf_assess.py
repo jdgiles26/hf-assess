@@ -852,7 +852,7 @@ def probe_input(raw: str, persist_dir: Optional[Path] = None) -> ProbeResult:
         candidate = _existing_path(line.strip())
         if candidate:
             path_tokens.append(candidate)
-    if len(path_tokens) == 1 and blob.count("\n") <= 2 and _existing_path(blob.splitlines()[0]):
+    if path_tokens:
         path = path_tokens[0]
         result.scan_file = str(path)
         result.kinds.append("file")

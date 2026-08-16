@@ -306,7 +306,8 @@ class GuiHeadlessTests(unittest.TestCase):
             self.assertEqual(app.probe.target, "10.0.0.8")
             detect = app.detect.get("1.0", "end")
             self.assertIn("10.0.0.8", detect)
-            self.assertTrue(app.chosen_model or True)
+            if app.chosen_model:
+                self.assertTrue(gui.model_is_cached(app.chosen_model))
             app.inbox.delete("1.0", "end")
             app.inbox.insert("1.0", "8.8.8.8")
             app._reprobe()
@@ -329,8 +330,50 @@ class GuiHeadlessTests(unittest.TestCase):
             app.update_idletasks()
             app._reprobe()
             self.assertFalse(app.probe.ready)
+            prompts: list[str] = []
+            app.bell = lambda: None  # type: ignore[method-assign]
+            import tkinter.messagebox as mb
+
+            original = mb.showinfo
+            mb.showinfo = lambda title, message: prompts.append(f"{title}:{message}") or "ok"  # type: ignore
+            try:
+                app.run_analysis()
+            finally:
+                mb.showinfo = original
+            self.assertTrue(any("Need input" in p for p in prompts), prompts)
         finally:
             app.destroy()
+
+    def test_gui_open_file_replaces_inbox_and_loads_scan(self):
+        gui = load(GUI, "hf_assess_gui_fn")
+        app = gui.EasyOperator(initial="10.0.0.8")
+        try:
+            app.update_idletasks()
+            with tempfile.TemporaryDirectory() as tmp:
+                scan = Path(tmp) / "scan.json"
+                scan.write_text(
+                    json.dumps({"target": "10.9.9.9", "vulnerabilities": [{"cve": "CVE-2014-0160", "severity": "high"}]}),
+                    encoding="utf-8",
+                )
+                app.inbox.delete("1.0", "end")
+                app.inbox.insert("1.0", f"lab-host\n{scan}")
+                app._reprobe()
+                self.assertEqual(app.probe.scan_file, str(scan.resolve()))
+                self.assertTrue(app.probe.ready)
+            app._set_busy(True)
+            self.assertEqual(str(app.inbox.cget("state")), "disabled")
+            app._set_busy(False)
+            self.assertEqual(str(app.inbox.cget("state")), "normal")
+        finally:
+            app.destroy()
+
+    def test_pick_ready_model_ignores_uncached(self):
+        gui = load(GUI, "hf_assess_gui_fn")
+        fake = "org/definitely-not-cached-xyz"
+        got = gui.pick_ready_model(fake)
+        self.assertNotEqual(got, fake)
+        if got:
+            self.assertTrue(gui.model_is_cached(got))
 
 
 class WrapperAndDeviceTests(unittest.TestCase):

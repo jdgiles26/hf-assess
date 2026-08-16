@@ -62,7 +62,7 @@ def pick_ready_model(preferred: Optional[str] = None) -> Optional[str]:
     for repo in PREFERRED_MODELS:
         if model_is_cached(repo):
             return repo
-    return preferred if preferred else None
+    return None
 
 
 def _redact_cmd(cmd: List[str]) -> str:
@@ -98,13 +98,17 @@ class EasyOperator(tk.Tk):
         self.busy = False
         self.last_output: Optional[Path] = None
         self.probe = None
+        self.pending_run: Optional[Dict[str, Any]] = None
+        self.child_proc: Optional[subprocess.Popen[str]] = None
+        self.drain_after: Optional[str] = None
         self.chosen_model = pick_ready_model(preselect_repo)
         self.operator = default_operator()
+        self.protocol("WM_DELETE_WINDOW", self._on_close)
         self._build()
         if initial.strip():
             self.inbox.insert("1.0", initial.strip())
         self.after(150, self._reprobe)
-        self.after(200, self._drain_queue)
+        self.drain_after = self.after(200, self._drain_queue)
 
     def _build(self) -> None:
         self.columnconfigure(0, weight=1)
@@ -131,9 +135,12 @@ class EasyOperator(tk.Tk):
 
         actions = ttk.Frame(box)
         actions.grid(row=1, column=0, sticky="ew", pady=(8, 0))
-        ttk.Button(actions, text="Open file…", command=self._open_file).pack(side="left")
-        ttk.Button(actions, text="Paste clipboard", command=self._paste_clipboard).pack(side="left", padx=6)
-        ttk.Button(actions, text="Clear", command=self._clear).pack(side="left")
+        self.open_btn = ttk.Button(actions, text="Open file…", command=self._open_file)
+        self.open_btn.pack(side="left")
+        self.paste_btn = ttk.Button(actions, text="Paste clipboard", command=self._paste_clipboard)
+        self.paste_btn.pack(side="left", padx=6)
+        self.clear_btn = ttk.Button(actions, text="Clear", command=self._clear)
+        self.clear_btn.pack(side="left")
         self.run_btn = ttk.Button(actions, text="Run", command=self.run_analysis)
         self.run_btn.pack(side="right")
         self.auth_var = tk.BooleanVar(value=False)
@@ -170,13 +177,57 @@ class EasyOperator(tk.Tk):
 
         self._probe_job = None
 
+    def _alive(self) -> bool:
+        try:
+            return bool(self.winfo_exists())
+        except tk.TclError:
+            return False
+
+    def _set_busy(self, busy: bool, status: Optional[str] = None) -> None:
+        self.busy = busy
+        state = ["disabled"] if busy else ["!disabled"]
+        for btn in (self.run_btn, self.open_btn, self.paste_btn, self.clear_btn):
+            try:
+                btn.state(state)
+            except tk.TclError:
+                pass
+        try:
+            self.inbox.configure(state="disabled" if busy else "normal")
+        except tk.TclError:
+            pass
+        if status is not None:
+            self.status.set(status)
+
+    def _on_close(self) -> None:
+        self.busy = False
+        self.pending_run = None
+        if self.drain_after is not None:
+            try:
+                self.after_cancel(self.drain_after)
+            except tk.TclError:
+                pass
+            self.drain_after = None
+        proc = self.child_proc
+        self.child_proc = None
+        if proc is not None and proc.poll() is None:
+            proc.terminate()
+            try:
+                proc.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+        self.destroy()
+
     def _model_status_line(self) -> str:
         nmap = "nmap found" if shutil.which("nmap") else "nmap not installed"
-        if self.chosen_model:
+        if self.chosen_model and model_is_cached(self.chosen_model):
             return f"Model ready: {self.chosen_model}   •   {nmap}"
+        if self.chosen_model:
+            return f"Will download {self.chosen_model}   •   {nmap}"
         return f"No local model on disk yet — Run will download SmolLM2 360M Instruct   •   {nmap}"
 
     def _schedule_probe(self) -> None:
+        if self.busy:
+            return
         if self._probe_job is not None:
             self.after_cancel(self._probe_job)
         self._probe_job = self.after(180, self._reprobe)
@@ -186,10 +237,18 @@ class EasyOperator(tk.Tk):
 
     def _reprobe(self) -> None:
         self._probe_job = None
+        if self.busy:
+            return
         text = self._inbox_text()
-        self.probe = self.analyzer.probe_input(text, persist_dir=RESULTS_DIR / "inbox")
+        try:
+            self.probe = self.analyzer.probe_input(text, persist_dir=RESULTS_DIR / "inbox")
+        except Exception as exc:  # noqa: BLE001
+            self.probe = None
+            self._set_text(self.detect, f"Could not read that input.\n{exc}")
+            return
         if self.probe.model_repo:
-            self.chosen_model = pick_ready_model(self.probe.model_repo) or self.probe.model_repo
+            cached = pick_ready_model(self.probe.model_repo)
+            self.chosen_model = cached or self.probe.model_repo
         if self.probe.operator:
             self.operator = self.probe.operator
         self._render_probe()
@@ -247,13 +306,16 @@ class EasyOperator(tk.Tk):
             ],
         )
         if path:
-            current = self._inbox_text()
-            addition = path if not current else current + "\n" + path
+            if self.busy:
+                return
+            self.inbox.configure(state="normal")
             self.inbox.delete("1.0", "end")
-            self.inbox.insert("1.0", addition)
+            self.inbox.insert("1.0", path)
             self._reprobe()
 
     def _paste_clipboard(self) -> None:
+        if self.busy:
+            return
         try:
             clip = self.clipboard_get()
         except tk.TclError:
@@ -263,6 +325,8 @@ class EasyOperator(tk.Tk):
             self._reprobe()
 
     def _clear(self) -> None:
+        if self.busy:
+            return
         self.inbox.delete("1.0", "end")
         self.probe = None
         self._render_probe()
@@ -289,11 +353,23 @@ class EasyOperator(tk.Tk):
                 f"No local model is ready.\nDownload {model} now and then run?",
             ):
                 return
+            self.pending_run = {
+                "probe": probe,
+                "model": model,
+                "nmap": bool(self.nmap_var.get()),
+                "authorized": bool(self.auth_var.get()),
+            }
             self._start_download(model, then_run=True)
             return
-        self._launch(probe, model)
+        self._launch(probe, model, nmap=self.nmap_var.get(), authorized=self.auth_var.get())
 
-    def _launch(self, probe: Any, model: str) -> None:
+    def _launch(
+        self,
+        probe: Any,
+        model: str,
+        nmap: Optional[bool] = None,
+        authorized: Optional[bool] = None,
+    ) -> None:
         RESULTS_DIR.mkdir(parents=True, exist_ok=True)
         stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
         host = probe.target or "assessment"
@@ -314,7 +390,9 @@ class EasyOperator(tk.Tk):
             cmd.extend(["--operator", self.operator])
         if probe.target:
             cmd.extend(["--target", probe.target])
-        tools = probe.tools or (["nmap"] if self.nmap_var.get() else ["imported-scan"])
+        use_nmap = self.nmap_var.get() if nmap is None else nmap
+        use_auth = self.auth_var.get() if authorized is None else authorized
+        tools = probe.tools or (["nmap"] if use_nmap else ["imported-scan"])
         cmd.append("--tools")
         cmd.extend(tools)
         if probe.scan_file:
@@ -323,27 +401,24 @@ class EasyOperator(tk.Tk):
             cmd.extend(["--hf-token", probe.hf_token])
         if probe.remote_url:
             cmd.extend(["--remote-model", probe.remote_url])
-        if probe.needs_authorization or self.auth_var.get():
+        if probe.needs_authorization or use_auth:
             cmd.append("--authorized")
-        if self.nmap_var.get():
+        if use_nmap:
             cmd.append("--run-tools")
         if probe.cves:
             cmd.append("--enrich-cves")
-        if probe.notes:
-            cmd.extend(["--notes", "; ".join(probe.notes)])
+        notes = list(probe.notes or [])
         if probe.extra_targets:
-            cmd.extend(["--notes", "Also mentioned: " + ", ".join(probe.extra_targets[:20])])
+            notes.append("Also mentioned: " + ", ".join(probe.extra_targets[:20]))
+        if notes:
+            cmd.extend(["--notes", "; ".join(notes)])
 
-        self.busy = True
-        self.run_btn.state(["disabled"])
-        self.status.set("Working…")
+        self._set_busy(True, "Working…")
         self._log(_redact_cmd(cmd))
         threading.Thread(target=self._run_worker, args=(cmd, output), daemon=True).start()
 
     def _start_download(self, repo: str, then_run: bool = False) -> None:
-        self.busy = True
-        self.run_btn.state(["disabled"])
-        self.status.set(f"Downloading {repo}…")
+        self._set_busy(True, f"Downloading {repo}…")
         self._log(f"Downloading {repo}")
         threading.Thread(target=self._download_worker, args=(repo, then_run), daemon=True).start()
 
@@ -365,12 +440,16 @@ class EasyOperator(tk.Tk):
                 text=True,
                 env=env,
             )
+            self.child_proc = proc
             assert proc.stdout is not None
             for line in proc.stdout:
                 self.msg_q.put(line.rstrip())
             rc = proc.wait()
+            if self.child_proc is proc:
+                self.child_proc = None
             self.msg_q.put(f"DOWNLOAD {'OK' if rc == 0 else 'FAIL'} {repo} {int(then_run)}")
         except Exception as exc:
+            self.child_proc = None
             self.msg_q.put(f"DOWNLOAD FAIL {repo} 0")
             self.msg_q.put(str(exc))
 
@@ -378,44 +457,57 @@ class EasyOperator(tk.Tk):
         env = os.environ.copy()
         try:
             proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, env=env)
+            self.child_proc = proc
             assert proc.stdout is not None
-            chunks: List[str] = []
             for line in proc.stdout:
-                chunks.append(line)
                 self.msg_q.put(line.rstrip())
             rc = proc.wait()
+            if self.child_proc is proc:
+                self.child_proc = None
             self.msg_q.put(f"RUN {rc} {output}")
         except Exception as exc:
+            self.child_proc = None
             self.msg_q.put(f"RUN FAIL {exc}")
 
     def _drain_queue(self) -> None:
+        if not self._alive():
+            return
         try:
             while True:
                 item = self.msg_q.get_nowait()
                 if item.startswith("DOWNLOAD OK "):
-                    _, _, repo, then_run = item.split(" ", 3)
+                    parts = item.split(" ")
+                    repo = parts[2] if len(parts) > 2 else ""
+                    then_run = parts[3] if len(parts) > 3 else "0"
                     self.chosen_model = repo
-                    self.busy = False
-                    self.run_btn.state(["!disabled"])
-                    self.status.set(f"Downloaded {repo}")
-                    if then_run == "1":
-                        self.run_analysis()
+                    pending = self.pending_run
+                    self.pending_run = None
+                    if then_run == "1" and pending and pending.get("probe") is not None:
+                        self.status.set(f"Downloaded {repo}")
+                        self._launch(
+                            pending["probe"],
+                            pending.get("model") or repo,
+                            nmap=pending.get("nmap"),
+                            authorized=pending.get("authorized"),
+                        )
+                    else:
+                        self._set_busy(False, f"Downloaded {repo}")
                 elif item.startswith("DOWNLOAD FAIL"):
-                    self.busy = False
-                    self.run_btn.state(["!disabled"])
-                    self.status.set("Download failed")
+                    self.pending_run = None
+                    self._set_busy(False, "Download failed")
                     messagebox.showerror("Download failed", item)
                 elif item.startswith("RUN FAIL"):
-                    self.busy = False
-                    self.run_btn.state(["!disabled"])
-                    self.status.set("Run failed")
+                    self._set_busy(False, "Run failed")
                     messagebox.showerror("Run failed", item)
                 elif item.startswith("RUN "):
                     parts = item.split(" ", 2)
+                    if len(parts) < 3:
+                        self._set_busy(False, "Run failed")
+                        self._log(item)
+                        continue
                     rc = int(parts[1])
                     output = Path(parts[2])
-                    self.busy = False
-                    self.run_btn.state(["!disabled"])
+                    self._set_busy(False)
                     if rc != 0:
                         self.status.set(f"Analyzer failed (exit {rc})")
                         messagebox.showerror("Analyzer failed", "See the Log tab.")
@@ -425,16 +517,27 @@ class EasyOperator(tk.Tk):
                     self._log(item)
         except queue.Empty:
             pass
-        self.after(200, self._drain_queue)
+        except Exception as exc:  # noqa: BLE001
+            self._set_busy(False, "UI update failed")
+            try:
+                self._log(f"queue error: {exc}")
+            except tk.TclError:
+                pass
+        if self._alive():
+            self.drain_after = self.after(200, self._drain_queue)
 
     def _show_output(self, output: Path) -> None:
         self.last_output = output
-        data: Dict[str, Any] = {}
-        if output.is_file():
-            try:
-                data = json.loads(output.read_text(encoding="utf-8"))
-            except json.JSONDecodeError:
-                data = {}
+        if not output.is_file():
+            self.status.set("Analyzer finished but wrote no report")
+            messagebox.showerror("No report", f"Expected JSON at:\n{output}")
+            return
+        try:
+            data = json.loads(output.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as exc:
+            self.status.set("Report was not valid JSON")
+            messagebox.showerror("Bad report", f"{output}\n{exc}")
+            return
         raw = data.get("raw_results") or {}
         analysis = data.get("ai_analysis") or {}
         risk = data.get("risk_score") or {}
