@@ -18,22 +18,19 @@ Homebrew Python blocks global `pip install`. Use the venv below.
 ## Install
 
 ```bash
-git clone https://github.com/YOUR_USER/hf-assess.git
+git clone https://github.com/jdgiles26/hf-assess.git
 cd hf-assess
-chmod +x hf-assess-gui.sh hf_assess.py hf-assess-gui.py
-./hf-assess-gui.sh --bootstrap
+./start
 ```
 
-That creates `.hf-assess-venv` and installs `requirements.txt`.
+That creates `.hf-assess-venv`, installs `requirements.txt`, offers a local model if none is cached, and opens the GUI.
 
 ## Run
 
-One-box GUI (recommended):
-
 ```bash
-./hf-assess-gui.sh
-./hf-assess-gui.sh 10.0.0.8
-./hf-assess-gui.sh path/to/nmap.xml
+./start
+./start 10.0.0.8
+./start path/to/nmap.xml
 ```
 
 If a small instruct model is already in `~/.cache/huggingface/hub`, the launcher skips the download prompt.
@@ -99,9 +96,10 @@ Live model tests skip unless `.hf-assess-venv` exists and a Hub model is already
 ## Layout
 
 ```
+start                one-command bootstrap + GUI
 hf_assess.py         CLI analyzer
 hf-assess-gui.py     desktop operator
-hf-assess-gui.sh     bootstrap + download + GUI
+hf-assess-gui.sh     extra launcher flags (--check, --probe, --download)
 requirements.txt
 tests/
 ```

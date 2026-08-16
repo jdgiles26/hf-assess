@@ -1,13 +1,55 @@
+# Local runtime
 .hf-assess-venv/
+.venv/
+venv/
 hf-assess-results/
 .hf-assess-cache/
+inbox/
+
+# Secrets and machine-local identity
+.env
+.env.*
+.envrc
+.hf-token
+hf_token
+*.pem
+*.key
+id_rsa
+id_ed25519
+credentials.json
+secrets.json
+
+# Generated reports (may contain target/scan data)
+*.bak
+*.json.bak
+reports/
+out/
+dist/
+build/
+
+# Python
 __pycache__/
 .pytest_cache/
 .mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
 *.pyc
+*.pyo
+*.egg-info/
+.tox/
+
+# Editors / OS / agent scratch
 .DS_Store
-.env
-.env.*
-*.json.bak
 .idea/
 .vscode/
+.grok/
+*.swp
+*~
+
+# Downloaded model weights if someone drops them in-tree
+*.safetensors
+*.bin
+*.gguf
+models/
+.cache/

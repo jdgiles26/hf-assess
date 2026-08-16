@@ -1,0 +1,73 @@
+#!/usr/bin/env bash
+# One-command start for HF Assess: venv, deps, optional model, GUI.
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$ROOT"
+
+ANALYZER="$ROOT/hf_assess.py"
+GUI="$ROOT/hf-assess-gui.py"
+LAUNCHER="$ROOT/hf-assess-gui.sh"
+REQ="$ROOT/requirements.txt"
+VENV="$ROOT/.hf-assess-venv"
+PY_SYS="${PYTHON:-python3}"
+
+die() { echo "start: $*" >&2; exit 1; }
+
+need() {
+  [[ -f "$1" ]] || die "missing $1 — run this from the cloned repo root"
+}
+
+need "$ANALYZER"
+need "$GUI"
+need "$REQ"
+
+if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
+  cat <<'EOF'
+Usage: ./start [target-or-file ...]
+
+First run:
+  • creates .hf-assess-venv
+  • installs requirements.txt
+  • offers a local model if none is cached
+  • opens the GUI
+
+Later runs skip install if the venv is already healthy.
+
+Pass a host, URL, or scan file to prefill the inbox:
+  ./start
+  ./start 10.0.0.8
+  ./start path/to/nmap.xml
+
+Other project commands (after ./start once):
+  ./hf-assess-gui.sh --check
+  ./hf-assess-gui.sh --probe '10.0.0.8'
+  .hf-assess-venv/bin/python -m unittest discover -s tests
+EOF
+  exit 0
+fi
+
+command -v "$PY_SYS" >/dev/null || die "python3 not found"
+"$PY_SYS" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 10) else 2)' \
+  || die "Python 3.10+ required (found $($PY_SYS -c 'import sys; print(sys.version.split()[0])'))"
+
+if [[ ! -x "$VENV/bin/python" ]]; then
+  echo "Creating virtualenv $VENV"
+  "$PY_SYS" -m venv "$VENV"
+  "$VENV/bin/python" -m pip install --upgrade pip
+  "$VENV/bin/pip" install -r "$REQ"
+elif ! "$VENV/bin/python" -c "import transformers, huggingface_hub, tkinter" >/dev/null 2>&1; then
+  echo "Installing missing packages into $VENV"
+  "$VENV/bin/pip" install -r "$REQ"
+fi
+
+"$VENV/bin/python" -c "import tkinter" >/dev/null 2>&1 \
+  || die "tkinter is missing. On macOS: brew install python-tk"
+
+chmod +x "$ANALYZER" "$GUI" "$LAUNCHER" "$ROOT/start" 2>/dev/null || true
+
+if [[ -x "$LAUNCHER" ]]; then
+  exec "$LAUNCHER" --gui "$@"
+fi
+
+exec "$VENV/bin/python" "$GUI" "$@"

@@ -7,7 +7,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ANALYZER="$SCRIPT_DIR/hf_assess.py"
 GUI_PY="$SCRIPT_DIR/hf-assess-gui.py"
 VENV="$SCRIPT_DIR/.hf-assess-venv"
-REQ="$SCRIPT_DIR/hf_assess_requirements.txt"
+REQ="$SCRIPT_DIR/requirements.txt"
 PY_SYS="${PYTHON:-python3}"
 
 usage() {
