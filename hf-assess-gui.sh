@@ -195,18 +195,20 @@ any_model_cached() {
 
 open_gui() {
   need_file "$GUI_PY"
-  local py extra=()
+  local py
   py="$(venv_python)"
   if ! "$py" -c "import tkinter" >/dev/null 2>&1; then
     echo "tkinter is not available in $py" >&2
     echo "Install python-tk, or run: brew install python-tk" >&2
     exit 2
   fi
-  if [[ -n "${CHOSEN_REPO:-}" ]]; then
-    extra=(--repo "$CHOSEN_REPO")
-  fi
   echo "Opening one-box operator…"
-  exec "$py" "$GUI_PY" "${extra[@]}" "$@"
+  # Avoid empty-array expansion: macOS /bin/bash is 3.2 and `set -u`
+  # treats "${extra[@]}" as unbound when the array was never assigned.
+  if [[ -n "${CHOSEN_REPO:-}" ]]; then
+    exec "$py" "$GUI_PY" --repo "$CHOSEN_REPO" "$@"
+  fi
+  exec "$py" "$GUI_PY" "$@"
 }
 
 print_check() {
