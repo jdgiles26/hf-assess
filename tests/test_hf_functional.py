@@ -230,6 +230,12 @@ class ProbeFunctionalTests(unittest.TestCase):
         )
         self.assertEqual(parsed["target"], "10.4.4.4")
 
+    def test_default_nmap_profile_is_bounded(self):
+        flags = self.mod._DEFAULT_NMAP
+        self.assertIn("--top-ports", flags)
+        self.assertIn("--host-timeout", flags)
+        self.assertIn("-T4", flags)
+
     def test_apply_probe_fills_config(self):
         probe = self.mod.probe_input("10.0.0.8 nmap")
         cfg = self.mod.AssessmentConfig()

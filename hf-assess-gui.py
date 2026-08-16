@@ -405,6 +405,7 @@ class EasyOperator(tk.Tk):
             cmd.append("--authorized")
         if use_nmap:
             cmd.append("--run-tools")
+            cmd.extend(["--nmap-timeout", "180"])
         if probe.cves:
             cmd.append("--enrich-cves")
         notes = list(probe.notes or [])
@@ -413,7 +414,10 @@ class EasyOperator(tk.Tk):
         if notes:
             cmd.extend(["--notes", "; ".join(notes)])
 
-        self._set_busy(True, "Working…")
+        busy_msg = "Working…"
+        if use_nmap:
+            busy_msg = f"Scanning {probe.target or 'target'} — nmap can take a few minutes…"
+        self._set_busy(True, busy_msg)
         self._log(_redact_cmd(cmd))
         threading.Thread(target=self._run_worker, args=(cmd, output), daemon=True).start()
 

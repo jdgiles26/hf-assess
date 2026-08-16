@@ -111,6 +111,7 @@ class AssessmentConfig:
     max_new_tokens: int = 400
     temperature: float = 0.3
     timeout: int = 45
+    nmap_timeout: int = 180
     formats: List[str] = field(default_factory=lambda: ["json", "markdown", "sarif"])
     quiet: bool = False
     verbose: bool = False
@@ -1450,6 +1451,23 @@ class AIAnalyzer:
 # ---------------------------------------------------------------------------
 
 
+_DEFAULT_NMAP = [
+    "-Pn",
+    "-T4",
+    "--top-ports",
+    "100",
+    "-sV",
+    "--version-intensity",
+    "2",
+    "--max-retries",
+    "2",
+    "--host-timeout",
+    "60s",
+    "-oX",
+    "-",
+]
+
+
 def run_nmap(config: AssessmentConfig) -> Dict[str, Any]:
     """Run a real nmap service scan when the binary is installed."""
     import shutil
@@ -1466,20 +1484,39 @@ def run_nmap(config: AssessmentConfig) -> Dict[str, Any]:
         extra = config.parameters["nmap"].split()
     elif isinstance(config.parameters.get("nmap"), list):
         extra = [str(x) for x in config.parameters["nmap"]]
-    cmd = [nmap, "-sV", "-oX", "-"]
     if extra:
         cmd = [nmap, *extra]
         if "-oX" not in cmd:
             cmd.extend(["-oX", "-"])
+    else:
+        cmd = [nmap, *_DEFAULT_NMAP]
     cmd.append(config.target)
-    logger.info("Running %s", " ".join(cmd))
+    budget = max(int(config.nmap_timeout or 0), int(config.timeout or 0), 180)
+    logger.info("Running %s  (limit %ss)", " ".join(cmd), budget)
     try:
-        proc = subprocess.run(cmd, capture_output=True, text=True, check=False, timeout=config.timeout)
+        proc = subprocess.run(cmd, capture_output=True, text=True, check=False, timeout=budget)
+        stdout, stderr, rc = proc.stdout, proc.stderr, proc.returncode
     except subprocess.TimeoutExpired as exc:
-        raise AssessmentError(f"nmap timed out after {config.timeout}s") from exc
-    if proc.returncode != 0:
-        raise AssessmentError(f"nmap exited {proc.returncode}: {proc.stderr.strip() or proc.stdout[:500]}")
-    parsed = parse_nmap_xml(proc.stdout)
+        stdout = exc.stdout.decode("utf-8", errors="replace") if isinstance(exc.stdout, bytes) else (exc.stdout or "")
+        stderr = exc.stderr.decode("utf-8", errors="replace") if isinstance(exc.stderr, bytes) else (exc.stderr or "")
+        if stdout and "<nmaprun" in stdout:
+            try:
+                parsed = parse_nmap_xml(stdout)
+                parsed["tools_used"] = ["nmap"]
+                parsed["nmap_command"] = cmd
+                parsed["status"] = "partial-timeout"
+                parsed["notes"] = f"nmap hit the {budget}s wall clock; results may be incomplete."
+                logger.warning("nmap timed out after %ss; using partial XML", budget)
+                return parsed
+            except ParseError:
+                pass
+        raise AssessmentError(
+            f"nmap timed out after {budget}s. Re-run with --nmap-timeout 300, "
+            "or pass a finished --scan-file."
+        ) from exc
+    if rc != 0:
+        raise AssessmentError(f"nmap exited {rc}: {stderr.strip() or stdout[:500]}")
+    parsed = parse_nmap_xml(stdout)
     parsed["tools_used"] = ["nmap"]
     parsed["nmap_command"] = cmd
     return parsed
@@ -1788,7 +1825,13 @@ A local transformers install or --remote-model is required. This tool does not i
     parser.add_argument("--hf-token", help="Hugging Face token (else HF_TOKEN / HUGGINGFACE_API_KEY)")
     parser.add_argument("--max-new-tokens", type=int, default=400)
     parser.add_argument("--temperature", type=float, default=0.3)
-    parser.add_argument("--timeout", type=int, default=45)
+    parser.add_argument("--timeout", type=int, default=45, help="HTTP timeout for remote model / CVE lookup")
+    parser.add_argument(
+        "--nmap-timeout",
+        type=int,
+        default=180,
+        help="Wall-clock seconds allowed for nmap (default 180; -sV of a public host often exceeds 45s)",
+    )
     parser.add_argument("--notes", default="", help="Free-form engagement notes")
     parser.add_argument("--config", help="JSON config file; CLI flags override file values")
     parser.add_argument("--check-deps", action="store_true", help="Print dependency status and exit")
@@ -1967,6 +2010,7 @@ def config_from_args(args: argparse.Namespace) -> AssessmentConfig:
         max_new_tokens=args.max_new_tokens,
         temperature=args.temperature,
         timeout=args.timeout,
+        nmap_timeout=int(getattr(args, "nmap_timeout", 180) or 180),
         formats=formats,
         quiet=bool(args.quiet),
         verbose=bool(args.verbose),
