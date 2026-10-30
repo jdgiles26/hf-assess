@@ -107,3 +107,35 @@ tests/
 ## License
 
 MIT
+
+## Repository status (2026-10-30)
+
+Local project folder backed up from this Mac.
+
+- Local folder: `/Users/admin/hf-assess`
+- GitHub: https://github.com/jdgiles26/hf-assess
+- Manifests: `requirements.txt`
+- File types under the root (dependencies skipped): (none) 6, .json 5, .py 5, .md 4, .sarif 3, .txt 2, .rhai 1, .sh 1
+
+### How to run
+
+- Python project. Create a virtualenv and install `requirements.txt` or the pyproject, then run the module named in this tree.
+- `./start`
+
+### Layout
+
+- `.gitignore`
+- `.grok/`
+- `.hf-assess-venv/`
+- `__pycache__/`
+- `hf-assess-gui.py`
+- `hf-assess-gui.sh`
+- `hf-assess-results/`
+- `hf_assess.py`
+- `LICENSE`
+- `README.md`
+- `requirements.txt`
+- `start`
+- `tests/`
+
+Weight files (`.gguf` and similar), virtual environments, `node_modules`, and files over 95MB stay on this Mac. They are not part of this commit. Secrets such as `.env`, private keys, and recovery codes are not committed.

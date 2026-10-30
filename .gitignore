@@ -53,3 +53,10 @@ htmlcov/
 *.gguf
 models/
 .cache/
+
+# Local backup exclusions
+myenv/
+node_modules/
+.env.local
+.env.production
+recovery_codes.txt
